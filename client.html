@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Client</title>
+</head>
+<body>
+<h1>WebSocket Client</h1>
+<div>
+    <input type="text" id="messageInput" placeholder="Enter your message">
+    <button onclick="sendMessage()">Send</button>
+</div>
+<div id="messages"></div>
+
+<script>
+    let ws;
+    let locationTimerId;
+
+    function connect() {
+        ws = new WebSocket("ws://localhost:1234/ws");
+
+        ws.onopen = function() {
+            console.log("Connected to WebSocket server");
+            startLocationUpdates();
+        };
+
+        ws.onmessage = function(event) {
+            let messageDisplay = document.getElementById("messages");
+            try {
+                const data = JSON.parse(event.data);
+                if (data && data.type === "location") {
+                    messageDisplay.innerHTML += `<p>Location update: lat=${data.lat}, lng=${data.lng}, acc=${data.accuracy ?? "n/a"}, ts=${data.timestamp ?? ""}</p>`;
+                } else {
+                    messageDisplay.innerHTML += `<p>${event.data}</p>`;
+                }
+            } catch (e) {
+                messageDisplay.innerHTML += `<p>${event.data}</p>`;
+            }
+        };
+
+        ws.onclose = function() {
+            console.log("WebSocket connection closed, retrying...");
+            if (locationTimerId) {
+                clearInterval(locationTimerId);
+                locationTimerId = null;
+            }
+            setTimeout(connect, 1000); // Reconnect after 1 second
+        };
+
+        ws.onerror = function(error) {
+            console.error("WebSocket error:", error);
+        };
+    }
+
+    function startLocationUpdates() {
+        if (!("geolocation" in navigator)) {
+            console.warn("Geolocation is not supported by this browser.");
+            return;
+        }
+        if (locationTimerId) {
+            clearInterval(locationTimerId);
+        }
+        const sendLocationOnce = () => {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    const payload = {
+                        type: "location",
+                        lat: pos.coords.latitude,
+                        lng: pos.coords.longitude,
+                        accuracy: pos.coords.accuracy,
+                        timestamp: new Date().toISOString()
+                    };
+                    try {
+                        ws.send(JSON.stringify(payload));
+                    } catch (e) {
+                        console.error("Failed to send location:", e);
+                    }
+                },
+                (err) => {
+                    console.error("Geolocation error:", err.message);
+                },
+                { enableHighAccuracy: true, maximumAge: 5000, timeout: 8000 }
+            );
+        };
+        // Send immediately, then every 5 seconds
+        sendLocationOnce();
+        locationTimerId = setInterval(sendLocationOnce, 5000);
+    }
+
+    function sendMessage() {
+        let input = document.getElementById("messageInput");
+        let message = input.value;
+        ws.send(message);
+        input.value = "";
+    }
+
+    connect();
+</script>
+</body>
+</html>

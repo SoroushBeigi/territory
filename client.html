@@ -16,8 +16,11 @@
 
 <script>
     let ws;
-    let locationTimerId;
+    let locationTimerId; // controls the 5s send loop (setTimeout-based)
     let broadcastRequested = false;
+    let watchId = null; // single geolocation watcher
+    let lastPosition = null; // latest position from watch
+    let permissionGranted = false;
 
     function connect() {
         ws = new WebSocket("ws://localhost:1234/ws");
@@ -46,10 +49,7 @@
 
         ws.onclose = function() {
             console.log("WebSocket connection closed, retrying...");
-            if (locationTimerId) {
-                clearInterval(locationTimerId);
-                locationTimerId = null;
-            }
+            stopLocationUpdates();
             setStatus("disconnected");
             setTimeout(connect, 1000); // Reconnect after 1 second
         };
@@ -64,41 +64,87 @@
             console.warn("Geolocation is not supported by this browser.");
             return;
         }
+        // Ensure we've requested permission once, then begin the 5s send loop.
+        ensurePermissionAndWatch(() => {
+            if (locationTimerId) return; // already running
+            scheduleNextSend(5000); // start counting after permission was granted
+            const btn = document.getElementById("startBtn");
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = "Broadcasting…";
+            }
+            setStatus("broadcasting");
+        });
+    }
+
+    function stopLocationUpdates() {
         if (locationTimerId) {
-            clearInterval(locationTimerId);
+            clearTimeout(locationTimerId);
+            locationTimerId = null;
         }
-        const sendLocationOnce = () => {
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-            navigator.geolocation.getCurrentPosition(
+        // Keep the watch running while broadcastingRequested is true, so we don't lose updates
+    }
+
+    function ensurePermissionAndWatch(onReady) {
+        if (permissionGranted) {
+            if (!watchId) startWatch();
+            onReady && onReady();
+            return;
+        }
+        // Trigger the permission prompt ONCE
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                permissionGranted = true;
+                lastPosition = pos;
+                if (!watchId) startWatch();
+                onReady && onReady();
+            },
+            (err) => {
+                console.error("Geolocation permission denied or error:", err.message);
+                setStatus("Permission denied");
+                // Allow user to try again
+                broadcastRequested = false;
+            },
+            { enableHighAccuracy: false, maximumAge: 0, timeout: 8000 }
+        );
+    }
+
+    function startWatch() {
+        if (watchId) return;
+        try {
+            watchId = navigator.geolocation.watchPosition(
                 (pos) => {
-                    const payload = {
-                        type: "location",
-                        lat: pos.coords.latitude,
-                        lng: pos.coords.longitude,
-                        accuracy: pos.coords.accuracy,
-                        timestamp: new Date().toISOString()
-                    };
-                    try {
-                        ws.send(JSON.stringify(payload));
-                    } catch (e) {
-                        console.error("Failed to send location:", e);
-                    }
+                    lastPosition = pos;
                 },
                 (err) => {
-                    console.error("Geolocation error:", err.message);
+                    console.warn("watchPosition error:", err.message);
                 },
-                { enableHighAccuracy: true, maximumAge: 5000, timeout: 8000 }
+                { enableHighAccuracy: false, maximumAge: 5000, timeout: 8000 }
             );
-        };
-        // Send immediately, then every 5 seconds
-        sendLocationOnce();
-        locationTimerId = setInterval(sendLocationOnce, 5000);
-        const btn = document.getElementById("startBtn");
-        if (btn) {
-            btn.disabled = true;
-            btn.textContent = "Broadcasting…";
+        } catch (e) {
+            console.error("Failed to start watchPosition:", e);
         }
-        setStatus("broadcasting");
+    }
+
+    function scheduleNextSend(delayMs) {
+        locationTimerId = setTimeout(() => {
+            if (!broadcastRequested) {
+                locationTimerId = null;
+                return;
+            }
+            if (ws && ws.readyState === WebSocket.OPEN && lastPosition) {
+                const payload = {
+                    type: "location",
+                    lat: lastPosition.coords.latitude,
+                    lng: lastPosition.coords.longitude,
+                    accuracy: lastPosition.coords.accuracy,
+                    timestamp: new Date().toISOString()
+                };
+                try { ws.send(JSON.stringify(payload)); } catch {}
+            }
+            // keep going every 5s
+            scheduleNextSend(5000);
+        }, delayMs);
     }
 
     function setStatus(state) {

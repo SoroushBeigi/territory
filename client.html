@@ -8,21 +8,26 @@
 <body>
 <h1>WebSocket Client</h1>
 <div>
-    <input type="text" id="messageInput" placeholder="Enter your message">
-    <button onclick="sendMessage()">Send</button>
+    <button id="startBtn">Start Broadcasting</button>
+    <small id="statusText" style="margin-left:8px;color:#555;"></small>
+    <p style="color:#777;margin-top:8px;">Tip: Browsers allow geolocation on localhost without HTTPS. Click the button to begin sending your location every 5 seconds.</p>
 </div>
 <div id="messages"></div>
 
 <script>
     let ws;
     let locationTimerId;
+    let broadcastRequested = false;
 
     function connect() {
         ws = new WebSocket("ws://localhost:1234/ws");
 
         ws.onopen = function() {
             console.log("Connected to WebSocket server");
-            startLocationUpdates();
+            setStatus("connected");
+            if (broadcastRequested) {
+                startLocationUpdates();
+            }
         };
 
         ws.onmessage = function(event) {
@@ -45,6 +50,7 @@
                 clearInterval(locationTimerId);
                 locationTimerId = null;
             }
+            setStatus("disconnected");
             setTimeout(connect, 1000); // Reconnect after 1 second
         };
 
@@ -87,15 +93,46 @@
         // Send immediately, then every 5 seconds
         sendLocationOnce();
         locationTimerId = setInterval(sendLocationOnce, 5000);
+        const btn = document.getElementById("startBtn");
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = "Broadcasting…";
+        }
+        setStatus("broadcasting");
     }
 
-    function sendMessage() {
-        let input = document.getElementById("messageInput");
-        let message = input.value;
-        ws.send(message);
-        input.value = "";
+    function setStatus(state) {
+        const el = document.getElementById("statusText");
+        if (!el) return;
+        switch (state) {
+            case "connected":
+                el.textContent = "Connected";
+                break;
+            case "broadcasting":
+                el.textContent = "Broadcasting location every 5s";
+                break;
+            case "disconnected":
+                el.textContent = "Disconnected; retrying…";
+                break;
+            default:
+                el.textContent = "";
+        }
     }
 
+    // Wire up the Start Broadcasting button
+    document.getElementById("startBtn").addEventListener("click", function() {
+        broadcastRequested = true;
+        if (!ws || ws.readyState === WebSocket.CLOSED) {
+            connect();
+            // startLocationUpdates will run on open
+        } else if (ws.readyState === WebSocket.OPEN) {
+            startLocationUpdates();
+        } else {
+            // connecting; startLocationUpdates will run on open
+        }
+    });
+
+    // Establish a connection early so we're ready when the user clicks
     connect();
 </script>
 </body>
